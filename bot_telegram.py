@@ -629,13 +629,6 @@ async def check_channel_membership(update, context):
     except:
         return False
 
-
-async def start(update, context):
-    if not await check_channel_membership(update, context):
-        return await show_join_alert(update)
-    await show_main_menu(update, context)
-
-
 async def show_main_menu(update, context):
     user_id = update.effective_user.id
     active_user = get_user_active_session(user_id)
