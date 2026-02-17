@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot Telegram XL Axiata Management (FINAL v13 - SESSION ISOLATION FIX)
-Features:
-1. FIXED: 'No refresh token found' (Decoupled session logic from CLI AuthInstance).
-2. FIXED: 'Message is not modified' BadRequest error ignored safely.
-3. CORE: Complete Dashboard, Account Manager, QRIS, etc.
+Bot Telegram XL Axiata Management (FINAL v13 - NO CHANNEL REQUIREMENT)
 """
 
 import os
@@ -36,7 +32,7 @@ load_dotenv()
 
 # Import telegram libraries
 try:
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, InputFile
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
     from telegram.ext import (Application, CommandHandler,
                               CallbackQueryHandler, MessageHandler,
                               ContextTypes, filters)
@@ -619,15 +615,9 @@ def get_family_packages_data(user_id, family_code):
 # ==========================================
 # 🎮 HANDLERS
 # ==========================================
-async def check_channel_membership(update, context):
-    user_id = update.effective_user.id
-    try:
-        member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
-        return member.status in [
-            ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER
-        ]
-    except:
-        return False
+async def start(update, context):
+    await show_main_menu(update, context)
+
 
 async def show_main_menu(update, context):
     user_id = update.effective_user.id
@@ -719,9 +709,6 @@ async def button_handler(update, context):
     query = update.callback_query
     data = query.data
     user_id = update.effective_user.id
-
-    if not await check_channel_membership(update, context):
-        return await show_join_alert(update)
 
     if data == "main_menu":
         context.user_data['state'] = None
