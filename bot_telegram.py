@@ -630,20 +630,6 @@ async def check_channel_membership(update, context):
         return False
 
 
-async def show_join_alert(update):
-    msg = f"⛔ Akses Ditolak. Join {REQUIRED_CHANNEL} dulu."
-    kb = [[
-        InlineKeyboardButton(
-            "📢 Join Channel",
-            url=f"https://t.me/{REQUIRED_CHANNEL.replace('@','')}")
-    ], [InlineKeyboardButton("✅ Check", callback_data="main_menu")]]
-    if update.callback_query:
-        await update.callback_query.answer("Wajib Join!", show_alert=True)
-    else:
-        await update.message.reply_text(msg,
-                                        reply_markup=InlineKeyboardMarkup(kb))
-
-
 async def start(update, context):
     if not await check_channel_membership(update, context):
         return await show_join_alert(update)
