@@ -68,7 +68,6 @@ logging.basicConfig(
     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REQUIRED_CHANNEL = os.getenv('REQUIRED_CHANNEL', '@singularityx2')
 SESSION_LIFETIME = 86400  # 24 Jam
 
 # Data Decoy
