@@ -12,6 +12,7 @@ import hashlib
 import time
 import uuid
 import base64
+import re
 import requests
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
@@ -1163,6 +1164,306 @@ async def message_handler(update, context):
         context.user_data['state'] = None
 
 
+# ==========================================
+# 📡 CEK KUOTA — TANPA OTP
+# Port dari cekkuota.js
+# API 1 (primary) : bendith.my.id
+# API 2 (fallback): kmsp-store.com
+# ==========================================
+
+_cq_rate: dict = {}    # rate limit per user
+_cq_query: dict = {}   # anti-spam double query
+
+
+def _normalize_msisdn(raw: str):
+    """08xx / 8xx / 628xx / +628xx  →  628xx"""
+    if not raw:
+        return None
+    s = raw.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace(".", "")
+    if s.startswith("+"):
+        s = s[1:]
+    if s.startswith("0"):
+        s = "62" + s[1:]
+    elif re.match(r"^8\d+$", s):
+        s = "62" + s
+    if not s.isdigit() or not (10 <= len(s) <= 15):
+        return None
+    return s
+
+
+def _parse_size_bytes(size_str: str) -> float:
+    """'1.5 GB' → bytes (untuk hitung progress bar)"""
+    if not size_str or not isinstance(size_str, str):
+        return 0
+    m = re.match(r"^([\d.,]+)\s*(TB|GB|MB|KB)?", size_str.replace(",", "").strip(), re.I)
+    if not m:
+        return 0
+    val = float(m.group(1))
+    unit = (m.group(2) or "MB").upper()
+    return val * {"TB": 1024**4, "GB": 1024**3, "MB": 1024**2, "KB": 1024}.get(unit, 1)
+
+
+def _bar(remaining, total, length=10) -> str:
+    """Progress bar: ▓▓▓▓░░░░░░ 40%"""
+    try:
+        if not total:
+            return "░" * length + " 0%"
+        pct = max(0.0, min(1.0, remaining / total))
+        f = round(pct * length)
+        return "▓" * f + "░" * (length - f) + f" {int(pct*100)}%"
+    except Exception:
+        return "░" * length
+
+
+def _kb_retry(msisdn: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Cek Ulang", callback_data=f"cq_retry:{msisdn}")
+    ]])
+
+
+# ── Fetch API ──────────────────────────────────────────
+
+async def _fetch_bendith(msisdn: str):
+    """Primary API — bendith.my.id"""
+    try:
+        loop = asyncio.get_event_loop()
+        r = await loop.run_in_executor(
+            None,
+            lambda: requests.get(
+                f"https://bendith.my.id/end.php?check=package&number={msisdn}&version=2",
+                timeout=15
+            )
+        )
+        d = r.json()
+        if d.get("success") and d.get("data", {}).get("subs_info"):
+            return d
+    except Exception as e:
+        logger.warning(f"[bendith] {e}")
+    return None
+
+
+async def _fetch_kmsp(msisdn: str):
+    """Fallback API — kmsp-store.com"""
+    try:
+        loop = asyncio.get_event_loop()
+        r = await loop.run_in_executor(
+            None,
+            lambda: requests.get(
+                "https://apigw.kmsp-store.com/sidompul/v4/cek_kuota",
+                params={"msisdn": msisdn, "isJSON": True},
+                headers={
+                    "Authorization": "Basic c2lkb21wdWxhcGk6YXBpZ3drbXNw",
+                    "X-API-Key": "60ef29aa-a648-4668-90ae-20951ef90c55",
+                    "X-App-Version": "4.0.0",
+                },
+                timeout=30
+            )
+        )
+        d = r.json()
+        if d.get("status"):
+            return d
+    except Exception as e:
+        logger.warning(f"[kmsp] {e}")
+    return None
+
+
+# ── Format Output ──────────────────────────────────────
+
+def _fmt_bendith(msisdn: str, data: dict) -> str:
+    info = data.get("data", {}).get("subs_info", {})
+    pkgs = data.get("data", {}).get("package_info", {}).get("packages", [])
+    volte = info.get("volte", {})
+
+    t  = f"✅ <b>Cek Kuota {info.get('operator','XL')}</b>\n"
+    t += f"📱 <b>Nomor:</b> <code>{msisdn}</code>\n"
+    t += f"💳 <b>Operator:</b> {info.get('operator','-')}\n"
+    t += f"🧾 <b>ID Verifikasi:</b> {info.get('id_verified','-')}\n"
+    t += f"📶 <b>Jaringan:</b> {info.get('net_type','-')}\n"
+    t += f"📅 <b>Masa Aktif:</b> {info.get('exp_date','-')}\n"
+    t += f"⚠️ <b>Masa Tenggang:</b> {info.get('grace_until','-')}\n"
+    t += f"⏳ <b>Umur Kartu:</b> {info.get('tenure','-')}\n"
+
+    if volte:
+        t += f"\n<b>📞 Status VoLTE:</b>\n"
+        t += f"  • Device  : {'✅ Ya' if volte.get('device')   else '❌ Tidak'}\n"
+        t += f"  • Area    : {'✅ Ya' if volte.get('area')     else '❌ Tidak'}\n"
+        t += f"  • Simcard : {'✅ Ya' if volte.get('simcard')  else '❌ Tidak'}\n"
+
+    if not pkgs:
+        t += "\n❌ <i>Tidak ada info paket aktif.</i>"
+        return t
+
+    t += "\n<b>📊 Detail Paket:</b>"
+    for p in pkgs:
+        t += f"\n\n📦 <b>{p.get('name','-')}</b> — <i>Exp: {p.get('expiry','-')}</i>\n"
+        for q in p.get("quotas", []):
+            total_s  = str(q.get("total", "-"))
+            remain_s = str(q.get("remaining", "-"))
+            tb = _parse_size_bytes(total_s)
+            rb = _parse_size_bytes(remain_s)
+            t += f"  • <b>{q.get('name','-')}</b>\n"
+            t += f"    {remain_s} / {total_s}\n"
+            if tb and rb:
+                t += f"    <code>[{_bar(rb, tb)}]</code>\n"
+            elif q.get("percent") is not None:
+                t += f"    ⏳ {q['percent']}%\n"
+    return t
+
+
+def _fmt_kmsp(msisdn: str, res: dict) -> str:
+    sp = res.get("data", {}).get("data_sp", {})
+
+    def v(key): return sp.get(key, {}).get("value", "-")
+
+    operator = v("prefix")
+    t  = f"✅ <b>Cek Kuota {operator}</b>\n"
+    t += f"📱 <b>Nomor:</b> <code>{msisdn}</code>\n"
+    t += f"💳 <b>Operator:</b> {operator}\n"
+    t += f"📶 <b>Status 4G:</b> {v('status_4g')}\n"
+    t += f"🧾 <b>Dukcapil:</b> {v('dukcapil')}\n"
+    t += f"📅 <b>Umur Kartu:</b> {v('active_card')}\n"
+    t += f"⏰ <b>Masa Aktif:</b> {v('active_period')}\n"
+    t += f"⚠️ <b>Masa Tenggang:</b> {v('grace_period')}\n"
+
+    vd, va, vs = v("volte_device"), v("volte_area"), v("volte_simcard")
+    if any(x != "-" for x in [vd, va, vs]):
+        t += f"\n<b>📞 Status VoLTE:</b>\n"
+        if vd != "-": t += f"  • Device  : {vd}\n"
+        if va != "-": t += f"  • Area    : {va}\n"
+        if vs != "-": t += f"  • Simcard : {vs}\n"
+
+    hasil = res.get("data", {}).get("hasil", "")
+    if not hasil:
+        t += "\n❌ <i>Tidak ada info kuota.</i>"
+        return t
+
+    raw = re.sub(r"<br\s*/?>", "\n", hasil, flags=re.I)
+    raw = re.sub(r"<[^>]*>", "", raw).replace("&nbsp;", " ").replace("&amp;", "&")
+
+    sections = re.split(r"(?=🎁 Quota:|🎁 Benefit:)", raw)
+    t += "\n<b>📊 Detail Kuota:</b>"
+    for sec in sections:
+        lines = [ln.strip() for ln in sec.split("\n") if ln.strip()]
+        name = total = sisa = exp = ""
+        for ln in lines:
+            if "🎁 Quota:" in ln or "🎁 Benefit:" in ln:
+                name = re.sub(r"🎁 (Quota|Benefit):\s*", "", ln)
+            elif "🎁 Kuota:" in ln:
+                total = ln.replace("🎁 Kuota:", "").strip()
+            elif "🌲 Sisa Kuota:" in ln:
+                sisa = ln.replace("🌲 Sisa Kuota:", "").strip()
+            elif "🍂 Aktif Hingga:" in ln:
+                exp = ln.replace("🍂 Aktif Hingga:", "").strip()
+        if not name:
+            continue
+        t += f"\n\n📦 <b>{name}</b>"
+        if exp: t += f" — <i>Exp: {exp}</i>"
+        t += "\n"
+        if total and sisa:
+            t += f"  • <b>Kuota:</b> {sisa} / {total}\n"
+            t += f"  • <code>[{_bar(_parse_size_bytes(sisa), _parse_size_bytes(total))}]</code>\n"
+        elif total:
+            t += f"  • <b>Kuota:</b> {total}\n"
+    return t
+
+
+# ── Core Logic ─────────────────────────────────────────
+
+async def _run_cekkuota(msisdn: str, loading_msg):
+    """Coba bendith dulu, fallback ke kmsp"""
+    # Primary
+    bend = await _fetch_bendith(msisdn)
+    if bend:
+        await loading_msg.edit_text(
+            _fmt_bendith(msisdn, bend)[:4000],
+            parse_mode="HTML", reply_markup=_kb_retry(msisdn)
+        )
+        return
+
+    logger.info(f"bendith kosong → fallback kmsp: {msisdn}")
+
+    # Fallback
+    kmsp = await _fetch_kmsp(msisdn)
+    if not kmsp:
+        await loading_msg.edit_text("❌ Gagal cek kuota. Nomor tidak ditemukan atau API sedang down.")
+        return
+
+    await loading_msg.edit_text(
+        _fmt_kmsp(msisdn, kmsp)[:4000],
+        parse_mode="HTML", reply_markup=_kb_retry(msisdn)
+    )
+
+
+# ── Handlers ───────────────────────────────────────────
+
+async def cekkuota(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /cekkuota <nomor>  |  /cek <nomor>  |  /kuota <nomor>
+    Cek kuota XL/AXIS/Smartfren tanpa perlu OTP atau login.
+    """
+    if not await check_channel_membership(update, context):
+        return await show_join_alert(update)
+
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    now     = time.time()
+
+    # Rate limit 6 detik
+    wait = 6 - (now - _cq_rate.get(user_id, 0))
+    if wait > 0:
+        return await update.message.reply_text(
+            f"⏳ Tunggu <b>{int(wait)+1} detik</b> sebelum cek lagi.",
+            parse_mode="HTML"
+        )
+    _cq_rate[user_id] = now
+
+    # Validasi argumen
+    if not context.args:
+        return await update.message.reply_text(
+            "📋 <b>Cara Pakai:</b>\n\n"
+            "<code>/cekkuota 081234567890</code>\n"
+            "<code>/cek 081234567890</code>\n"
+            "<code>/kuota 081234567890</code>\n\n"
+            "✅ Tanpa OTP, langsung dapat info kuota.",
+            parse_mode="HTML"
+        )
+
+    msisdn = _normalize_msisdn(context.args[0])
+    if not msisdn:
+        return await update.message.reply_text(
+            "❌ Nomor tidak valid.\n"
+            "<b>Contoh:</b> <code>/cekkuota 081234567890</code>",
+            parse_mode="HTML"
+        )
+
+    # Anti double-spam
+    key = f"{chat_id}:{msisdn}"
+    if now - _cq_query.get(key, 0) < 5:
+        return
+    _cq_query[key] = now
+
+    loading = await update.message.reply_text(
+        f"🔍 Mengecek kuota <code>{msisdn}</code> ...",
+        parse_mode="HTML",
+        reply_to_message_id=update.message.message_id
+    )
+    await _run_cekkuota(msisdn, loading)
+
+
+async def cekkuota_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tombol 🔄 Cek Ulang"""
+    query = update.callback_query
+    if not (query.data or "").startswith("cq_retry:"):
+        return
+    msisdn = query.data.split(":", 1)[1]
+    await query.answer("🔍 Mengecek ulang...")
+    await query.edit_message_text(
+        f"🔍 Mengecek kuota <code>{msisdn}</code> ...",
+        parse_mode="HTML"
+    )
+    await _run_cekkuota(msisdn, query.message)
+
+
 def main():
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     try:
@@ -1174,6 +1475,10 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", lambda u, c: show_main_menu(u, c)))
+    app.add_handler(CommandHandler("cekkuota", cekkuota))
+    app.add_handler(CommandHandler("cek", cekkuota))
+    app.add_handler(CommandHandler("kuota", cekkuota))
+    app.add_handler(CallbackQueryHandler(cekkuota_callback, pattern="^cq_retry:"))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
