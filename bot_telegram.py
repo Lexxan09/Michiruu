@@ -1164,6 +1164,7 @@ async def message_handler(update, context):
         context.user_data['state'] = None
 
 
+
 # ==========================================
 # 📡 CEK KUOTA — TANPA OTP
 # Port dari cekkuota.js
@@ -1171,12 +1172,12 @@ async def message_handler(update, context):
 # API 2 (fallback): kmsp-store.com
 # ==========================================
 
-_cq_rate: dict = {}    # rate limit per user
-_cq_query: dict = {}   # anti-spam double query
+_cq_rate: dict = {}
+_cq_query: dict = {}
 
 
 def _normalize_msisdn(raw: str):
-    """08xx / 8xx / 628xx / +628xx  →  628xx"""
+    """08xx / 8xx / 628xx / +628xx → 628xx"""
     if not raw:
         return None
     s = raw.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace(".", "")
@@ -1192,7 +1193,6 @@ def _normalize_msisdn(raw: str):
 
 
 def _parse_size_bytes(size_str: str) -> float:
-    """'1.5 GB' → bytes (untuk hitung progress bar)"""
     if not size_str or not isinstance(size_str, str):
         return 0
     m = re.match(r"^([\d.,]+)\s*(TB|GB|MB|KB)?", size_str.replace(",", "").strip(), re.I)
@@ -1204,7 +1204,6 @@ def _parse_size_bytes(size_str: str) -> float:
 
 
 def _bar(remaining, total, length=10) -> str:
-    """Progress bar: ▓▓▓▓░░░░░░ 40%"""
     try:
         if not total:
             return "░" * length + " 0%"
@@ -1221,10 +1220,7 @@ def _kb_retry(msisdn: str) -> InlineKeyboardMarkup:
     ]])
 
 
-# ── Fetch API ──────────────────────────────────────────
-
 async def _fetch_bendith(msisdn: str):
-    """Primary API — bendith.my.id"""
     try:
         loop = asyncio.get_event_loop()
         r = await loop.run_in_executor(
@@ -1243,7 +1239,6 @@ async def _fetch_bendith(msisdn: str):
 
 
 async def _fetch_kmsp(msisdn: str):
-    """Fallback API — kmsp-store.com"""
     try:
         loop = asyncio.get_event_loop()
         r = await loop.run_in_executor(
@@ -1267,11 +1262,9 @@ async def _fetch_kmsp(msisdn: str):
     return None
 
 
-# ── Format Output ──────────────────────────────────────
-
 def _fmt_bendith(msisdn: str, data: dict) -> str:
-    info = data.get("data", {}).get("subs_info", {})
-    pkgs = data.get("data", {}).get("package_info", {}).get("packages", [])
+    info  = data.get("data", {}).get("subs_info", {})
+    pkgs  = data.get("data", {}).get("package_info", {}).get("packages", [])
     volte = info.get("volte", {})
 
     t  = f"✅ <b>Cek Kuota {info.get('operator','XL')}</b>\n"
@@ -1284,10 +1277,10 @@ def _fmt_bendith(msisdn: str, data: dict) -> str:
     t += f"⏳ <b>Umur Kartu:</b> {info.get('tenure','-')}\n"
 
     if volte:
-        t += f"\n<b>📞 Status VoLTE:</b>\n"
-        t += f"  • Device  : {'✅ Ya' if volte.get('device')   else '❌ Tidak'}\n"
-        t += f"  • Area    : {'✅ Ya' if volte.get('area')     else '❌ Tidak'}\n"
-        t += f"  • Simcard : {'✅ Ya' if volte.get('simcard')  else '❌ Tidak'}\n"
+        t += "\n<b>📞 Status VoLTE:</b>\n"
+        t += f"  • Device  : {'✅ Ya' if volte.get('device')  else '❌ Tidak'}\n"
+        t += f"  • Area    : {'✅ Ya' if volte.get('area')    else '❌ Tidak'}\n"
+        t += f"  • Simcard : {'✅ Ya' if volte.get('simcard') else '❌ Tidak'}\n"
 
     if not pkgs:
         t += "\n❌ <i>Tidak ada info paket aktif.</i>"
@@ -1297,12 +1290,12 @@ def _fmt_bendith(msisdn: str, data: dict) -> str:
     for p in pkgs:
         t += f"\n\n📦 <b>{p.get('name','-')}</b> — <i>Exp: {p.get('expiry','-')}</i>\n"
         for q in p.get("quotas", []):
-            total_s  = str(q.get("total", "-"))
-            remain_s = str(q.get("remaining", "-"))
-            tb = _parse_size_bytes(total_s)
-            rb = _parse_size_bytes(remain_s)
+            ts = str(q.get("total", "-"))
+            rs = str(q.get("remaining", "-"))
+            tb = _parse_size_bytes(ts)
+            rb = _parse_size_bytes(rs)
             t += f"  • <b>{q.get('name','-')}</b>\n"
-            t += f"    {remain_s} / {total_s}\n"
+            t += f"    {rs} / {ts}\n"
             if tb and rb:
                 t += f"    <code>[{_bar(rb, tb)}]</code>\n"
             elif q.get("percent") is not None:
@@ -1327,7 +1320,7 @@ def _fmt_kmsp(msisdn: str, res: dict) -> str:
 
     vd, va, vs = v("volte_device"), v("volte_area"), v("volte_simcard")
     if any(x != "-" for x in [vd, va, vs]):
-        t += f"\n<b>📞 Status VoLTE:</b>\n"
+        t += "\n<b>📞 Status VoLTE:</b>\n"
         if vd != "-": t += f"  • Device  : {vd}\n"
         if va != "-": t += f"  • Area    : {va}\n"
         if vs != "-": t += f"  • Simcard : {vs}\n"
@@ -1357,7 +1350,8 @@ def _fmt_kmsp(msisdn: str, res: dict) -> str:
         if not name:
             continue
         t += f"\n\n📦 <b>{name}</b>"
-        if exp: t += f" — <i>Exp: {exp}</i>"
+        if exp:
+            t += f" — <i>Exp: {exp}</i>"
         t += "\n"
         if total and sisa:
             t += f"  • <b>Kuota:</b> {sisa} / {total}\n"
@@ -1367,43 +1361,34 @@ def _fmt_kmsp(msisdn: str, res: dict) -> str:
     return t
 
 
-# ── Core Logic ─────────────────────────────────────────
-
 async def _run_cekkuota(msisdn: str, loading_msg):
-    """Coba bendith dulu, fallback ke kmsp"""
-    # Primary
+    """Coba bendith → fallback kmsp"""
     bend = await _fetch_bendith(msisdn)
     if bend:
         await loading_msg.edit_text(
             _fmt_bendith(msisdn, bend)[:4000],
-            parse_mode="HTML", reply_markup=_kb_retry(msisdn)
+            parse_mode="HTML",
+            reply_markup=_kb_retry(msisdn)
         )
         return
 
     logger.info(f"bendith kosong → fallback kmsp: {msisdn}")
-
-    # Fallback
     kmsp = await _fetch_kmsp(msisdn)
     if not kmsp:
-        await loading_msg.edit_text("❌ Gagal cek kuota. Nomor tidak ditemukan atau API sedang down.")
+        await loading_msg.edit_text(
+            "❌ Gagal cek kuota. Nomor tidak ditemukan atau semua API sedang down."
+        )
         return
 
     await loading_msg.edit_text(
         _fmt_kmsp(msisdn, kmsp)[:4000],
-        parse_mode="HTML", reply_markup=_kb_retry(msisdn)
+        parse_mode="HTML",
+        reply_markup=_kb_retry(msisdn)
     )
 
 
-# ── Handlers ───────────────────────────────────────────
-
 async def cekkuota(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /cekkuota <nomor>  |  /cek <nomor>  |  /kuota <nomor>
-    Cek kuota XL/AXIS/Smartfren tanpa perlu OTP atau login.
-    """
-    if not await check_channel_membership(update, context):
-        return await show_join_alert(update)
-
+    """/cekkuota <nomor> | /cek <nomor> | /kuota <nomor> — tanpa OTP"""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     now     = time.time()
@@ -1417,7 +1402,6 @@ async def cekkuota(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     _cq_rate[user_id] = now
 
-    # Validasi argumen
     if not context.args:
         return await update.message.reply_text(
             "📋 <b>Cara Pakai:</b>\n\n"
