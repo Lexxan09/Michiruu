@@ -1408,7 +1408,7 @@ async def cekkuota(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<code>/cekkuota 081234567890</code>\n"
             "<code>/cek 081234567890</code>\n"
             "<code>/kuota 081234567890</code>\n\n"
-            "✅ Tanpa OTP, langsung dapat info kuota.",
+            "Khusus untuk melihat paket aktif.",
             parse_mode="HTML"
         )
 
